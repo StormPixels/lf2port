@@ -1,0 +1,71 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+def gdxVersion = '1.12.1'
+
+configurations { natives }
+
+android {
+    namespace 'com.lf2port'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.lf2port.darkfiren'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '0.1'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = '17' }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['libs']
+        }
+    }
+
+    androidResources {
+        noCompress 'dat', 'bmp', 'wav', 'ogg', 'txt'
+    }
+}
+
+dependencies {
+    implementation "com.badlogicgames.gdx:gdx:$gdxVersion"
+    implementation "com.badlogicgames.gdx:gdx-backend-android:$gdxVersion"
+    natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-armeabi-v7a"
+    natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-arm64-v8a"
+    natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-x86"
+    natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-x86_64"
+}
+
+// Salin library native libGDX (.so) ke folder libs/<abi> sebelum APK dipaketkan.
+tasks.register('copyAndroidNatives') {
+    doFirst {
+        ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'].each { file("libs/$it").mkdirs() }
+        configurations.natives.copy().files.each { jar ->
+            def abi = null
+            if (jar.name.endsWith('natives-armeabi-v7a.jar')) abi = 'armeabi-v7a'
+            else if (jar.name.endsWith('natives-arm64-v8a.jar')) abi = 'arm64-v8a'
+            else if (jar.name.endsWith('natives-x86_64.jar')) abi = 'x86_64'
+            else if (jar.name.endsWith('natives-x86.jar')) abi = 'x86'
+            if (abi != null) {
+                copy {
+                    from zipTree(jar)
+                    into file("libs/$abi")
+                    include '*.so'
+                }
+            }
+        }
+    }
+}
+
+tasks.matching { it.name.contains('JniLibFolders') }.configureEach {
+    dependsOn 'copyAndroidNatives'
+}

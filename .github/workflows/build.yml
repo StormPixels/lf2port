@@ -1,0 +1,46 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      - name: Cek aset game
+        run: |
+          if [ ! -f app/src/main/assets/lf2/data/data.txt ]; then
+            echo "Aset belum ada. Salin isi folder LF2_v2.0a_darkfiren ke app/src/main/assets/lf2/"
+            exit 1
+          fi
+
+      - name: Konversi musik WMA ke OGG
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          for f in app/src/main/assets/lf2/bgm/*.wma; do
+            [ -e "$f" ] || continue
+            ffmpeg -y -loglevel error -i "$f" -c:a libvorbis -q:a 4 "${f%.wma}.ogg"
+            rm "$f"
+          done
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lf2-darkfiren-apk
+          path: app/build/outputs/apk/debug/*.apk
