@@ -50,7 +50,7 @@ class MainActivity : AndroidApplication() {
             useCompass = false
         }
         try {
-            initialize(Lf2Game(gameRoots()), config)
+            initialize(Lf2Play(gameRoots()), config)
         } catch (t: Throwable) {
             val trace = Log.getStackTraceString(t)
             try {
