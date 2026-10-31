@@ -1,3 +1,0 @@
-<dll_list_begin>
-  file: dlls\ai.dll
-<dll_list_end>

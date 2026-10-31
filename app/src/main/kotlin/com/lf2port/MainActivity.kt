@@ -14,7 +14,17 @@ import java.io.File
 
 class MainActivity : AndroidApplication() {
 
-    private val crashFile: File get() = File(filesDir, "crash.txt")
+    /** Folder data game: Android/data/<paket>/files/lf2 dan Android/media/<paket>/lf2. */
+    private fun gameRoots(): List<String> {
+        val list = ArrayList<String>()
+        getExternalFilesDir(null)?.let { list.add(File(it, "lf2").absolutePath) }
+        externalMediaDirs.firstOrNull()?.let { list.add(File(it, "lf2").absolutePath) }
+        list.forEach { File(it).mkdirs() } // buat folder agar mudah ditemukan
+        return list
+    }
+
+    /** Log crash disimpan di folder data eksternal agar bisa dibuka lewat file manager. */
+    private val crashFile: File get() = File(getExternalFilesDir(null) ?: filesDir, "crash.txt")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,7 +50,7 @@ class MainActivity : AndroidApplication() {
             useCompass = false
         }
         try {
-            initialize(Lf2Game(), config)
+            initialize(Lf2Game(gameRoots()), config)
         } catch (t: Throwable) {
             val trace = Log.getStackTraceString(t)
             try {

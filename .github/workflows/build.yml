@@ -20,23 +20,6 @@ jobs:
         with:
           gradle-version: 8.7
 
-      - name: Cek aset game
-        run: |
-          if [ ! -f app/src/main/assets/lf2/data/data.txt ]; then
-            echo "Aset belum ada. Salin isi folder LF2_v2.0a_darkfiren ke app/src/main/assets/lf2/"
-            exit 1
-          fi
-
-      - name: Konversi musik WMA ke OGG
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-          for f in app/src/main/assets/lf2/bgm/*.wma; do
-            [ -e "$f" ] || continue
-            ffmpeg -y -loglevel error -i "$f" -c:a libvorbis -q:a 4 "${f%.wma}.ogg"
-            rm "$f"
-          done
-
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 

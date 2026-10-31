@@ -1,27 +1,26 @@
 package com.lf2port.data
 
-import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
 
 /**
- * Indeks aset tanpa membedakan huruf besar/kecil (Android case-sensitive,
- * sedangkan path di file .dat memakai backslash dan huruf campuran).
+ * Indeks aset di folder luar APK, tanpa membedakan huruf besar/kecil
+ * (Android case-sensitive, sedangkan path di file .dat memakai backslash dan huruf campuran).
  */
-class AssetIndex(private val root: String) {
+class AssetIndex(root: FileHandle) {
     private val map = HashMap<String, FileHandle>()
 
     init {
-        walk(Gdx.files.internal(root))
+        walk(root, "")
     }
 
-    private fun walk(dir: FileHandle) {
+    private fun walk(dir: FileHandle, prefix: String) {
         for (f in dir.list()) {
-            if (f.isDirectory) walk(f) else map[f.path().replace('\\', '/').lowercase()] = f
+            val key = prefix + f.name()
+            if (f.isDirectory) walk(f, "$key/") else map[key.lowercase()] = f
         }
     }
 
     val size: Int get() = map.size
 
-    fun resolve(path: String): FileHandle? =
-        map["$root/${path.replace('\\', '/')}".lowercase()]
+    fun resolve(path: String): FileHandle? = map[path.replace('\\', '/').lowercase()]
 }

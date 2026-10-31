@@ -24,7 +24,7 @@ import com.lf2port.data.ObjectParser
  * Kontrol: ketuk sisi kiri/kanan = ganti karakter, ketuk bagian bawah = frame berikutnya (jeda),
  * ketuk bagian atas = lanjutkan animasi.
  */
-class Lf2Game : ApplicationAdapter() {
+class Lf2Game(private val roots: List<String>) : ApplicationAdapter() {
     private class Entry(val id: Int, val file: String)
 
     private lateinit var assets: AssetIndex
@@ -57,9 +57,14 @@ class Lf2Game : ApplicationAdapter() {
         shapes = ShapeRenderer()
         font = BitmapFont(true) // font bawaan libGDX, y-down
         try {
-            assets = AssetIndex("lf2")
+            val dir = roots.map { Gdx.files.absolute(it) }.firstOrNull { it.child("data/data.txt").exists() }
+                ?: throw IllegalStateException(
+                    "Aset game belum ada. Salin isi folder LF2_v2.0a_darkfiren ke salah satu folder ini " +
+                        "(data/data.txt harus ada di dalamnya):\n" + roots.joinToString("\n")
+                )
+            assets = AssetIndex(dir)
             val dataTxt = assets.resolve("data/data.txt")
-                ?: throw IllegalStateException("data/data.txt tidak ada di assets/lf2")
+                ?: throw IllegalStateException("data/data.txt tidak ditemukan")
             val text = dataTxt.readString("ISO-8859-1").substringBefore("<background>")
             Regex("""id:\s*(\d+)\s+type:\s*0\s+file:\s*(\S+)""").findAll(text).forEach {
                 entries.add(Entry(it.groupValues[1].toInt(), it.groupValues[2]))
@@ -160,6 +165,7 @@ class Lf2Game : ApplicationAdapter() {
                 val sx = (idx % s.perRow) * (s.w + 1)
                 val sy = (idx / s.perRow) * (s.h + 1)
                 val region = TextureRegion(textures[si], sx, sy, s.w, s.h)
+                region.flip(false, true) // kamera y-bawah: balik tekstur agar tegak
                 ox = anchorX - f.int("centerx") * scale
                 oy = anchorY - f.int("centery") * scale
                 batch.draw(region, ox, oy, s.w * scale, s.h * scale)
