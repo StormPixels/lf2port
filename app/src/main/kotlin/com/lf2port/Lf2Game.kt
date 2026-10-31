@@ -55,11 +55,7 @@ class Lf2Game : ApplicationAdapter() {
         cam.setToOrtho(true, 800f, 450f)
         batch = SpriteBatch()
         shapes = ShapeRenderer()
-        font = BitmapFont(
-            Gdx.files.classpath("com/badlogic/gdx/utils/arial-15.fnt"),
-            Gdx.files.classpath("com/badlogic/gdx/utils/arial-15.png"),
-            true
-        )
+        font = BitmapFont(true) // font bawaan libGDX, y-down
         try {
             assets = AssetIndex("lf2")
             val dataTxt = assets.resolve("data/data.txt")
