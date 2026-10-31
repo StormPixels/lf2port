@@ -3,6 +3,7 @@ package com.lf2port.engine
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
+import com.lf2port.data.Box
 import com.lf2port.data.Frame
 import com.lf2port.data.ObjectDat
 
@@ -14,16 +15,25 @@ class Pad {
     var a = false
     var j = false
     var d = false
+
+    fun clear() {
+        left = false; right = false; up = false; down = false
+        a = false; j = false; d = false
+    }
 }
+
+/** Kotak itr/bdy dalam koordinat dunia. top/bottom dalam sumbu tinggi (positif ke atas). */
+class Rect(val x0: Float, val x1: Float, val top: Float, val bottom: Float, val box: Box)
 
 /**
  * Petarung dengan logika frame ala LF2 (30 tick/detik).
  * Koordinat: x (horizontal), z (kedalaman, = posisi y layar di tanah), y (tinggi, positif ke atas).
  * vy mengikuti konvensi LF2: negatif = naik.
- * Sudah ada: state 0-2 (diam/jalan/lari), 3 (serang), 4 (lompat), 5 (dash), 7 (tangkis), 15 (mendarat).
- * Belum ada: damage, benda/senjata, tangkap, terluka/jatuh, AI.
+ * State yang ditangani: 0-2 (diam/jalan/lari), 3 (serang), 4 (lompat), 5 (dash), 7 (tangkis),
+ * 8 (tangkisan jebol), 11 (terluka), 12 (jatuh), 14 (tergeletak), 15 (mendarat/lain-lain).
+ * Belum ada: benda/senjata, tangkap, move spesial, MP.
  */
-class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
+class Fighter(val obj: ObjectDat, var x: Float, var z: Float, val team: Int = 1) {
     var y = 0f
     var vx = 0f
     var vy = 0f
@@ -32,10 +42,26 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
     var frame: Frame = obj.frames[0] ?: obj.frames.values.first()
         private set
 
+    val maxHp = 500f
+    var hp = maxHp
+    var fallMeter = 0f
+    var defMeter = 0f
+    var arestTimer = 0
+    var deadTicks = 0
+    val vrest = HashMap<Fighter, Int>()
+    val hitThisFrame = HashSet<Fighter>()
+    var ai: Ai? = null
+    var textures: List<Texture> = emptyList()
+
+    val state: Int get() = frame.int("state")
+    val airborne: Boolean get() = y > 0f || vy < 0f
+
     private var counter = frame.int("wait")
     private var pad = Pad()
     private var tickNo = 0
     private var altPunch = false
+    private var altInjured = false
+    private var bounced = false
     private var pLeft = false
     private var pRight = false
     private var pA = false
@@ -47,10 +73,14 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
     private fun fv(f: Frame, k: String): Float =
         f.props[k]?.trim()?.split(' ')?.firstOrNull()?.toFloatOrNull() ?: 0f
 
+    private fun bv(b: Box, k: String): Float =
+        b.props[k]?.trim()?.split(' ')?.firstOrNull()?.toFloatOrNull() ?: 0f
+
     private fun enter(id: Int) {
         val f = obj.frames[id] ?: return
         frame = f
         counter = f.int("wait")
+        hitThisFrame.clear()
         val dvx = fv(f, "dvx")
         val dvy = fv(f, "dvy")
         val dvz = fv(f, "dvz")
@@ -59,9 +89,102 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
         if (dvz != 0f && dvz != 550f) vz = dvz
     }
 
+    fun revive(nx: Float, nz: Float) {
+        x = nx; z = nz; y = 0f
+        vx = 0f; vy = 0f; vz = 0f
+        hp = maxHp
+        fallMeter = 0f; defMeter = 0f; arestTimer = 0; deadTicks = 0
+        bounced = false
+        vrest.clear()
+        hitThisFrame.clear()
+        enter(0)
+    }
+
+    // ---- geometri ----
+
+    private fun spriteW(): Int {
+        val pic = frame.int("pic")
+        return obj.sheets.firstOrNull { pic in it.first..it.last }?.w ?: 79
+    }
+
+    fun rects(list: List<Box>): List<Rect> {
+        val sw = spriteW()
+        val cx = frame.int("centerx")
+        val cy = frame.int("centery")
+        val left = if (facing > 0) x - cx else x - (sw - cx)
+        return list.map { b ->
+            val x0 = if (facing > 0) left + b.x else left + (sw - (b.x + b.w))
+            val top = y + cy - b.y
+            Rect(x0, x0 + b.w, top, top - b.h, b)
+        }
+    }
+
+    // ---- terkena serangan ----
+
+    /** Terapkan itr [itr] milik penyerang [att] ke petarung ini. */
+    fun takeHit(att: Fighter, itr: Box) {
+        val injury = bv(itr, "injury")
+        val fall = if (itr.props.containsKey("fall")) bv(itr, "fall") else 20f
+        val dvx = bv(itr, "dvx")
+        val dvy = bv(itr, "dvy")
+        val bdefend = bv(itr, "bdefend")
+        val dir = att.facing
+        val fromFront = facing == -dir
+        val st = state
+
+        if (st == 7 && fromFront && (frame.id == 110 || frame.id == 111)) {
+            hp = maxOf(0f, hp - injury * 0.1f)
+            defMeter += bdefend
+            if (defMeter >= 60f) {
+                defMeter = 0f
+                enter(112) // tangkisan jebol
+            } else {
+                enter(111)
+            }
+            vx = dvx * dir * 0.4f
+            return
+        }
+
+        hp = maxOf(0f, hp - injury)
+        fallMeter += fall
+        val goDown = fallMeter >= 60f || airborne || hp <= 0f || st == 12
+        if (goDown) {
+            fallMeter = 0f
+            bounced = false
+            enter(if (fromFront) 180 else 186)
+            vx = dvx * dir
+            vy = if (dvy != 0f) dvy else -8f
+        } else {
+            if (fromFront) {
+                enter(if (altInjured) 224 else 220)
+                altInjured = !altInjured
+            } else {
+                enter(222)
+            }
+            vx = dvx * dir * 0.5f
+        }
+        vz = 0f
+    }
+
+    // ---- tick ----
+
     fun tick(p: Pad, bgWidth: Int, zMin: Int, zMax: Int) {
         pad = p
         tickNo++
+
+        if (arestTimer > 0) arestTimer--
+        if (vrest.isNotEmpty()) {
+            val it = vrest.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                val left = e.value - 1
+                if (left <= 0) it.remove() else e.setValue(left)
+            }
+        }
+        fallMeter = maxOf(0f, fallMeter - 0.6f)
+        defMeter = maxOf(0f, defMeter - 0.3f)
+        if (hp <= 0f && state == 14) deadTicks++ else if (hp > 0f) deadTicks = 0
+
         val dirX = (if (p.right) 1 else 0) - (if (p.left) 1 else 0)
         val dirZ = (if (p.down) 1 else 0) - (if (p.up) 1 else 0)
 
@@ -87,8 +210,9 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
     }
 
     private fun control(dirX: Int, dirZ: Int, doubleTap: Boolean, aEdge: Boolean, jEdge: Boolean) {
-        val st = frame.int("state")
-        val grounded = y <= 0f && vy >= 0f
+        if (hp <= 0f) return
+        val st = state
+        val grounded = !airborne
         if (grounded && st in 0..2) {
             when {
                 aEdge -> {
@@ -154,10 +278,15 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
             counter--
             return
         }
-        val st = frame.int("state")
+        val st = state
         val id = frame.id
         val n = frame.int("next")
         when {
+            st == 12 -> {
+                val base = if (id >= 186) 186 else 180
+                if (id - base < 3) enter(id + 1) else counter = frame.int("wait")
+            }
+            st == 14 && hp <= 0f -> counter = frame.int("wait") // tetap tergeletak
             st == 1 -> enter(if (id >= 8) 5 else id + 1)
             st == 2 -> enter(if (id >= 11) 9 else id + 1)
             st == 7 && (id == 110 || id == 111) -> enter(if (pad.d) 110 else 0)
@@ -168,7 +297,7 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
                 enter(if (n == 0 || n == 999) 211 else n)
             }
             n == 0 || n == 999 -> {
-                if (y > 0f || vy < 0f) counter = frame.int("wait") // tahan frame selama di udara
+                if (airborne) counter = frame.int("wait") // tahan frame selama di udara
                 else enter(0)
             }
             else -> enter(n)
@@ -176,8 +305,8 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
     }
 
     private fun physics() {
-        val st = frame.int("state")
-        val wasAir = y > 0f || vy < 0f
+        val st = state
+        val wasAir = airborne
         x += vx
         z += vz
         if (wasAir) {
@@ -186,17 +315,34 @@ class Fighter(private val obj: ObjectDat, var x: Float, var z: Float) {
             if (y <= 0f) {
                 y = 0f
                 if (vy >= 0f) {
-                    vy = 0f
-                    if (st == 3 || st == 4 || st == 5) enter(215) // mendarat
+                    if (st == 12) {
+                        val base = if (frame.id >= 186) 186 else 180
+                        if (!bounced && vy > 7f) {
+                            bounced = true
+                            vy = -vy * 0.35f
+                            vx *= 0.6f
+                            enter(base + 4)
+                        } else {
+                            val back = frame.id < 186
+                            vy = 0f
+                            vx *= 0.3f
+                            vz = 0f
+                            bounced = false
+                            enter(if (back) 230 else 231)
+                        }
+                    } else {
+                        vy = 0f
+                        if (st == 3 || st == 4 || st == 5) enter(215) // mendarat
+                    }
                 }
             }
-        } else if (st == 3 || st == 15) {
+        } else if (st == 3 || st == 7 || st == 8 || st == 11 || st == 14 || st == 15) {
             vx *= 0.7f
             vz *= 0.7f
         }
     }
 
-    fun draw(batch: SpriteBatch, textures: List<Texture>, camX: Float) {
+    fun draw(batch: SpriteBatch, camX: Float) {
         val f = frame
         val pic = f.int("pic")
         val si = obj.sheets.indexOfFirst { pic in it.first..it.last }

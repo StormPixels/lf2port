@@ -16,25 +16,30 @@ import com.badlogic.gdx.utils.viewport.FitViewport
 import com.badlogic.gdx.utils.viewport.ScreenViewport
 import com.lf2port.data.AssetIndex
 import com.lf2port.data.BgDat
+import com.lf2port.data.BgLayer
 import com.lf2port.data.BgParser
 import com.lf2port.data.BmpDecoder
 import com.lf2port.data.Lf2Crypto
 import com.lf2port.data.ObjectDat
 import com.lf2port.data.ObjectParser
+import com.lf2port.engine.Ai
 import com.lf2port.engine.Fighter
 import com.lf2port.engine.Pad
+import com.lf2port.engine.World
 import kotlin.math.hypot
 import kotlin.math.min
 
 /**
- * Milestone 2: dunia + satu pemain.
+ * Milestone 3: pertarungan.
  * Kontrol: D-pad kiri-bawah (ketuk 2x cepat ke kiri/kanan = lari), A = serang, J = lompat, D = tangkis.
  * Lari + J = dash, di udara + A = serangan lompat.
  * Ketuk pojok kiri atas / kanan atas = ganti karakter, ketuk tengah atas = ganti background.
+ * Dua musuh (AI sederhana) muncul di setiap arena.
  */
 class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
     private class Entry(val id: Int, val file: String)
-    private class Layer(val def: com.lf2port.data.BgLayer, val region: TextureRegion)
+    private class Layer(val def: BgLayer, val region: TextureRegion)
+    private class Loaded(val obj: ObjectDat, val tex: List<Texture>)
 
     private val viewW = 794f
     private val viewH = 550f
@@ -53,12 +58,11 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
     private var charIdx = 0
     private var bgIdx = 0
 
-    private var obj: ObjectDat? = null
-    private var sheets = ArrayList<Texture>()
+    private val cache = HashMap<Int, Loaded>()
     private var bg: BgDat? = null
     private var layers = ArrayList<Layer>()
     private var layerTex = ArrayList<Texture>()
-    private var fighter: Fighter? = null
+    private var world: World? = null
     private var error: String? = null
 
     private val pad = Pad()
@@ -103,7 +107,6 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
             val bi = bgs.indexOfFirst { it.id == 1 }
             bgIdx = if (bi >= 0) bi else 0
             loadBg(bgIdx)
-            loadChar(charIdx)
         } catch (e: Exception) {
             error = e.toString()
         }
@@ -117,6 +120,7 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
         layerTex = ArrayList()
         layers = ArrayList()
         bg = null
+        world = null
         if (bgs.isEmpty()) return
         bgIdx = (i + bgs.size) % bgs.size
         val e = bgs[bgIdx]
@@ -140,42 +144,77 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
             }
             bg = def
             error = null
-            spawn()
+            buildWorld()
         } catch (ex: Exception) {
             error = "${e.file}: $ex"
         }
     }
 
     private fun loadChar(i: Int) {
-        sheets.forEach { it.dispose() }
-        sheets = ArrayList()
-        obj = null
-        fighter = null
         charIdx = (i + chars.size) % chars.size
-        val e = chars[charIdx]
-        try {
+        buildWorld()
+    }
+
+    private fun loadObj(idx: Int): Loaded? {
+        cache[idx]?.let { return it }
+        val e = chars[idx]
+        return try {
             val fh = assets.resolve(e.file) ?: throw IllegalStateException("File tidak ditemukan: ${e.file}")
             val o = ObjectParser.parse(Lf2Crypto.readDat(fh.readBytes()))
+            val tex = ArrayList<Texture>()
             for (s in o.sheets) {
                 val bmp = assets.resolve(s.path) ?: throw IllegalStateException("Sprite tidak ada: ${s.path}")
                 val pm = BmpDecoder.decode(bmp.readBytes())
-                val tex = Texture(pm)
-                tex.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest)
+                val t = Texture(pm)
+                t.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest)
                 pm.dispose()
-                sheets.add(tex)
+                tex.add(t)
             }
-            obj = o
-            error = null
-            spawn()
+            val l = Loaded(o, tex)
+            cache[idx] = l
+            l
         } catch (ex: Exception) {
             error = "${e.file}: $ex"
+            null
         }
     }
 
-    private fun spawn() {
-        val o = obj ?: return
+    private fun buildWorld() {
         val b = bg ?: return
-        fighter = Fighter(o, 200f, (b.zMin + b.zMax) / 2f)
+        val w = World(b.width, b.zMin, b.zMax)
+        val zMid = (b.zMin + b.zMax) / 2f
+
+        val pl = loadObj(charIdx)
+        if (pl == null) {
+            world = null
+            return
+        }
+        val player = try {
+            Fighter(pl.obj, 200f, zMid, team = 1)
+        } catch (ex: Exception) {
+            error = "${chars[charIdx].file}: $ex"
+            world = null
+            return
+        }
+        player.textures = pl.tex
+        w.fighters.add(player)
+        w.player = player
+
+        for (k in 1..2) {
+            val idx = (charIdx + k) % chars.size
+            val ld = loadObj(idx) ?: continue
+            val enemy = try {
+                Fighter(ld.obj, 450f + 140f * k, zMid + (if (k == 1) -30f else 30f), team = 2)
+            } catch (_: Exception) {
+                continue
+            }
+            enemy.textures = ld.tex
+            enemy.facing = -1
+            enemy.ai = Ai(enemy) { w.player }
+            w.fighters.add(enemy)
+        }
+        world = w
+        error = null
     }
 
     // ---- kontrol sentuh ----
@@ -200,8 +239,7 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
     }
 
     private fun readPad(l: Layout) {
-        pad.left = false; pad.right = false; pad.up = false; pad.down = false
-        pad.a = false; pad.j = false; pad.d = false
+        pad.clear()
         for (i in 0 until 5) {
             if (!Gdx.input.isTouched(i)) continue
             val tx = Gdx.input.getX(i).toFloat()
@@ -244,15 +282,18 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
         if (chars.isNotEmpty()) handleTaps() else taps.clear()
         readPad(l)
 
-        val f = fighter
+        val w = world
         val b = bg
-        if (f != null && b != null) {
+        val player = w?.player
+        if (w != null && b != null) {
             acc += Gdx.graphics.deltaTime
             while (acc >= 1f / 30f) {
                 acc -= 1f / 30f
-                f.tick(pad, b.width, b.zMin, b.zMax)
+                w.tick(pad)
             }
-            camX = (f.x - viewW / 2f).coerceIn(0f, maxOf(0f, b.width - viewW))
+            if (player != null) {
+                camX = (player.x - viewW / 2f).coerceIn(0f, maxOf(0f, b.width - viewW))
+            }
         }
 
         Gdx.gl.glClearColor(0.05f, 0.05f, 0.08f, 1f)
@@ -270,23 +311,43 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
         if (b != null) drawLayers(b)
         batch.end()
 
-        if (f != null) {
+        val sorted = w?.fighters?.sortedBy { it.z } ?: emptyList()
+
+        if (w != null) {
             shapes.begin(ShapeRenderer.ShapeType.Filled)
             shapes.color = Color(0f, 0f, 0f, 0.35f)
-            shapes.ellipse(f.x - camX - 22f, f.z - 5f, 44f, 10f)
+            for (f in sorted) shapes.ellipse(f.x - camX - 22f, f.z - 5f, 44f, 10f)
             shapes.end()
         }
 
         batch.begin()
-        val o = obj
-        if (f != null) f.draw(batch, sheets, camX)
+        for (f in sorted) f.draw(batch, camX)
+        batch.end()
+
+        if (w != null) {
+            shapes.begin(ShapeRenderer.ShapeType.Filled)
+            for (f in sorted) {
+                if (f.hp <= 0f) continue
+                val bx = f.x - camX - 25f
+                val by = f.z - f.y - 112f
+                shapes.color = Color(0f, 0f, 0f, 0.6f)
+                shapes.rect(bx - 1f, by - 1f, 52f, 7f)
+                shapes.color = if (f.team == 1) Color(0.2f, 0.85f, 0.3f, 1f) else Color(0.9f, 0.25f, 0.2f, 1f)
+                shapes.rect(bx, by, 50f * (f.hp / f.maxHp), 5f)
+            }
+            shapes.color = Color(1f, 0.9f, 0.3f, 0.9f)
+            for (s in w.sparks) shapes.circle(s.x - camX, s.z - s.h, 3f + s.ttl * 2.2f)
+            shapes.end()
+        }
+
+        batch.begin()
         font.color = Color.WHITE
         font.data.setScale(1f)
-        if (f != null && o != null) {
+        if (player != null) {
             font.draw(
                 batch,
-                "${o.name}  [${charIdx + 1}/${chars.size}]   bg: ${bg?.name ?: "-"}   " +
-                    "frame ${f.frame.id} ${f.frame.name}  state ${f.frame.int("state")}",
+                "${player.obj.name}  [${charIdx + 1}/${chars.size}]   bg: ${b?.name ?: "-"}   " +
+                    "HP ${player.hp.toInt()}   frame ${player.frame.id} ${player.frame.name}",
                 10f, 8f
             )
         }
@@ -361,7 +422,7 @@ class Lf2Play(private val roots: List<String>) : ApplicationAdapter() {
     }
 
     override fun dispose() {
-        sheets.forEach { it.dispose() }
+        cache.values.forEach { l -> l.tex.forEach { it.dispose() } }
         layerTex.forEach { it.dispose() }
         batch.dispose()
         shapes.dispose()
